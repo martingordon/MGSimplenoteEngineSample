@@ -8,10 +8,15 @@
 
 #import <UIKit/UIKit.h>
 
+@class MGSimplenoteIndex;
 
 @interface MGNotesViewController : UITableViewController {
+    MGSimplenoteIndex *index;
+
 	NSString *email, *authToken;
 	NSArray *notes;
+
+    BOOL showDeleted;
 }
 
 @property (nonatomic, copy) NSString *email, *authToken;

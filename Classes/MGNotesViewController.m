@@ -11,7 +11,9 @@
 #import "MGSimplenoteIndex.h"
 #import "MGSimplenote.h"
 
-@interface MGNotesViewController (Internal)
+@interface MGNotesViewController ()
+
+@property (nonatomic, retain) MGSimplenoteIndex *index;
 
 - (void)failure:(NSNotification *)notif;
 
@@ -20,6 +22,7 @@
 
 @implementation MGNotesViewController
 
+@synthesize index;
 @synthesize email, authToken;
 @synthesize notes;
 
@@ -31,14 +34,28 @@
     if ((self = [super initWithStyle:style])) {
 		UIBarButtonItem *refresh = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(refresh:)];
 		UIBarButtonItem *space = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+        UIBarButtonItem *toggleDeleted = [[UIBarButtonItem alloc] initWithTitle:@"Show Deleted" style:UIBarButtonItemStyleBordered target:self action:@selector(toggleDeleted:)];
 		UIBarButtonItem *add = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(add:)];
 		
-		self.toolbarItems = [NSArray arrayWithObjects:refresh, space, add, nil];
+		self.toolbarItems = [NSArray arrayWithObjects:refresh, space, toggleDeleted, space, add, nil];
 		[refresh release];
 		[space release];
+        [toggleDeleted release];
 		[add release];
+
+        showDeleted = NO;
     }
     return self;
+}
+
+- (MGSimplenoteIndex *)index {
+    if (index == nil) {
+        index = [[MGSimplenoteIndex alloc] init];
+        index.email = self.email;
+        index.authToken = self.authToken;
+        [index addObserver:self forSelector:@selector(pullFromRemote) success:@selector(indexSucceeded:) failure:@selector(failure:)];
+    }
+    return index;
 }
 
 - (void)cancel:(id)sender {
@@ -46,12 +63,15 @@
 }
 
 - (void)refresh:(id)sender {
-	MGSimplenoteIndex *index = [[MGSimplenoteIndex alloc] init];
-	index.email = self.email;
-	index.authToken = self.authToken;
-	[index addObserver:self forSelector:@selector(pullFromRemote) success:@selector(indexSucceeded:) failure:@selector(failure:)];
-	
-	[index pullFromRemote];
+    self.index = nil;
+    self.notes = nil;
+	[self.index pullFromRemote];
+}
+
+- (void)toggleDeleted:(id)sender {
+    showDeleted = !showDeleted;
+    ((UIBarButtonItem *)sender).style = (showDeleted ? UIBarButtonItemStyleDone : UIBarButtonItemStyleBordered);
+    [self refresh:nil];
 }
 
 - (void)add:(id)sender {
@@ -69,14 +89,24 @@
 
 - (void)indexSucceeded:(NSNotification *)notif {
 	NSArray *incomingNotes = [[[notif userInfo] objectForKey:@"MGSimplenoteIndex"] contents];
-	NSMutableArray *notDeleted = [NSMutableArray arrayWithCapacity:[incomingNotes count]];
+    NSMutableArray *tempNotes = [NSMutableArray arrayWithCapacity:[incomingNotes count]];
 
-	for (MGSimplenote *note in incomingNotes) {
-		if ([note.deleted boolValue] == NO) {
-			[notDeleted addObject:note];
-		}
-	}
-	self.notes = notDeleted;
+    if (!showDeleted) {
+        for (MGSimplenote *note in incomingNotes) {
+            if ([note.deleted boolValue] == NO) {
+                [tempNotes addObject:note];
+            }
+        }
+    } else {
+        tempNotes = [incomingNotes mutableCopy];
+    }
+
+    if (self.notes == nil) {
+        self.notes = tempNotes;
+    } else {
+        self.notes = [self.notes arrayByAddingObjectsFromArray:tempNotes];
+    }
+
 	[self.tableView reloadData];
 	
 	for (MGSimplenote *note in self.notes) {
@@ -92,9 +122,9 @@
 
 
 - (void)notePullSuccess:(NSNotification *)notif {
-	NSInteger index = [self.notes indexOfObject:[[notif userInfo] objectForKey:@"MGSimplenote"]];
+	NSInteger row = [self.notes indexOfObject:[[notif userInfo] objectForKey:@"MGSimplenote"]];
 	
-	[self.tableView reloadRowsAtIndexPaths:[NSArray arrayWithObject:[NSIndexPath indexPathForRow:index inSection:0]] withRowAnimation:UITableViewRowAnimationNone];
+	[self.tableView reloadRowsAtIndexPaths:[NSArray arrayWithObject:[NSIndexPath indexPathForRow:row inSection:0]] withRowAnimation:UITableViewRowAnimationNone];
 }
 
 
@@ -153,15 +183,31 @@
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     // Return the number of rows in the section.
-    return [self.notes count];
+    return [self.notes count] + (self.index.mark ? 1 : 0);
 }
 
+- (UITableViewCell *)moreResultsCell {
+    UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"MoreNotesCell"];
+    if (cell == nil) {
+        cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"MoreNotesCell"] autorelease];
+    }
+
+    cell.textLabel.text = @"More Notes...";
+    cell.textLabel.textAlignment = UITextAlignmentCenter;
+    cell.textLabel.textColor = [UIColor blueColor];
+
+    return cell;
+}
 
 // Customize the appearance of table view cells.
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     
     static NSString *CellIdentifier = @"Cell";
     
+    if (indexPath.row == [self.notes count]) {
+        return [self moreResultsCell];
+    }
+
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:CellIdentifier];
     if (cell == nil) {
         cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:CellIdentifier] autorelease];
@@ -178,7 +224,11 @@
 		[scanner scanUpToCharactersFromSet:[NSCharacterSet newlineCharacterSet] intoString:&str];
 		NSInteger upto = ([str length] < 25 ? [str length] : 25);
 		cell.textLabel.text = [str substringToIndex:upto];
-		cell.selectionStyle = UITableViewCellSelectionStyleBlue;		
+		cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+
+        if ([note.deleted boolValue]) {
+            cell.textLabel.text = [NSString stringWithFormat:@"[X] %@", cell.textLabel.text];
+        }
 	}
 	NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
 	[formatter setDateStyle:NSDateFormatterShortStyle];
@@ -236,11 +286,15 @@
 #pragma mark Table view delegate
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-	MGNoteDetailController *detailController = [[MGNoteDetailController alloc] initWithNibName:nil bundle:nil];
-	
-	detailController.note = [self.notes objectAtIndex:indexPath.row];
-	[self.navigationController pushViewController:detailController animated:YES];
-	[detailController release];
+    if (indexPath.row == [self.notes count]) {
+        [self.index pullFromRemote];
+    } else {
+        MGNoteDetailController *detailController = [[MGNoteDetailController alloc] initWithNibName:nil bundle:nil];
+
+        detailController.note = [self.notes objectAtIndex:indexPath.row];
+        [self.navigationController pushViewController:detailController animated:YES];
+        [detailController release];
+    }
 }
 
 
